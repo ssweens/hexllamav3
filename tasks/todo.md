@@ -1,3 +1,12 @@
+# Remaining native validation (2026-10-14)
+
+- [x] Run full GLM prefill/decode with each rebuilt native wheel; CUDA/ROCm continuations match the saved reference exactly.
+- [x] Reproduce and remove CUDA site-packages injection for wheel-only ROCm workers while preserving shared-checkout loading; two new regression cases pass and negative control fails.
+- [x] Repackage Python changes without recompiling unchanged native sources; native bytes unchanged, 14 cases pass in both wheel environments, 16 handoffs and weighted wheel-only inference pass.
+- [x] Independently review, publish code/docs, restore the normal Corral profile, and verify remote synchronization; review ships and normal GLM is Ready on 10178.
+
+Scope: existing serial text path and the tested hardware/weights. No native/build-source edits, production venv installs, Corral source changes, or `.51` DGX configuration changes.
+
 # Heterogeneous CUDA + ROCm implementation
 
 - [x] Clone `v1.6.0` into the isolated `exllamav3-hetero` fork.
@@ -42,8 +51,8 @@ Publication result: https://github.com/ssweens/hexllamav3 is public, retains `tu
 
 ## Additional validation outside the completed follow-up
 
-- [ ] Run full weighted-model inference with the rebuilt native extensions.
-- [ ] Remove parent-site-packages injection before enabling installed-wheel-only heterogeneous deployment; keep using the shared checkout for serving.
+- [x] Run full weighted-model inference with the rebuilt native extensions.
+- [x] Remove parent-site-packages injection and validate installed-wheel-only heterogeneous deployment; the normal serving profile remains on the shared checkout.
 
 ## Review
 

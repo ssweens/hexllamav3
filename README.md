@@ -177,7 +177,7 @@ Install matching upstream ExLlamaV3 `v1.6.0` wheels in two separate virtualenvs:
 When a matching prebuilt `exllamav3_ext` is installed, this checkout reuses that extension rather than JIT-building it.
 Local fork wheels have been tested with Python 3.13: CUDA 12.8/PyTorch 2.9 on the NVIDIA GPUs, and HIP 7.2/PyTorch 2.13 on `gfx1151`. CUDA 12.8 compilation requires a compatible build environment; the tested build used Ubuntu 24.04 because this host's glibc 2.44 headers are incompatible. The wheels were tested in isolated environments, not installed over the serving environments.
 
-For heterogeneous serving, keep the shared checkout on `PYTHONPATH`. Installed-wheel-only heterogeneous deployment is not supported by the current worker import-path setup.
+Heterogeneous execution works with a shared checkout on `PYTHONPATH` or matching fork packages installed separately in the CUDA and ROCm environments. Installed workers keep their own package/native-extension paths; only a source checkout is propagated through `PYTHONPATH`. Full GLM inference with rebuilt wheels and wheel-only heterogeneous loading have passed on the tested hardware; see [test coverage](TEST_COVERAGE.md).
 
 Clone the fork and select the interpreters for your machine:
 

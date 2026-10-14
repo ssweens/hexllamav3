@@ -59,10 +59,29 @@ GLM 2.10-bpw, 767-token cached prefill, and 128 greedy decode steps produced byt
 | ROCm upstream v1.6.0 | 278.56 | 17.71 |
 | ROCm fork | 279.05 | 17.98 |
 
-These are single warm measurements, not a statistical performance guarantee. CUDA used three GPUs and six CPU-offloaded expert layers; ROCm used device 0 with no CPU expert offload. Each baseline/fork pair used the same existing prebuilt native extension to isolate Python changes. The newly built native extensions passed kernel checks, not full weighted-model inference. Serving remains on the original venvs with the shared source checkout.
+These are single warm measurements, not a statistical performance guarantee. CUDA used three GPUs and six CPU-offloaded expert layers; ROCm used device 0 with no CPU expert offload. Each baseline/fork pair used the same existing prebuilt native extension to isolate Python changes. The initial newly built extensions passed kernel checks; subsequent full weighted-model validation is recorded below. Normal serving remains on the original venvs with the shared source checkout.
+
+## Completed rebuilt-wheel and wheel-only validation
+
+Full GLM 2.10-bpw inference with the rebuilt native extensions passed 767-token prefill plus 128 greedy decode steps. CUDA used the same three-GPU / six-CPU-expert-layer profile as the reference; ROCm used device 0 without expert offload. Both continuations were byte-identical to the saved upstream/fork reference.
+
+| Rebuilt-wheel mode | Prefill tok/s | Decode tok/s |
+| --- | ---: | ---: |
+| CUDA + CPU experts | 544.76 | 46.78 |
+| ROCm | 343.43 | 18.12 |
+| CUDA + ROCm, 40/5 layers | 974.61 | 41.07 |
+
+The wheel-only worker failure was reproduced before the repair: adding the CUDA parent's site-packages to the HIP interpreter's `PYTHONPATH` selected the CUDA extension and raised `ImportError: libcudart.so.12`. Both launch paths now propagate the package root only for source checkouts (identified by `pyproject.toml`), leaving installed workers to select their own wheels.
+
+The updated Python payloads were repackaged with standard `wheel unpack`/`wheel pack`; all native `.so` bytes remain identical to the previously rebuilt binaries. From a neutral working directory with no source `PYTHONPATH`, 16 exact 1 MiB GPU handoffs and the weighted 40/5-layer heterogeneous run passed. Its continuation matched both rebuilt single-backend runs and the saved reference exactly. All 14 focused tests pass in both isolated wheel environments. Independent read-only review passed eight runtime tests and confirmed a negative control restores the installed-worker failure while preserving source propagation.
+
+- Updated CUDA wheel SHA-256: `94f72cdf5000a8b7f5f12a6118b1ccd7cdb8e5dc3bd585207e0ef86d008901d6`.
+- Updated ROCm wheel SHA-256: `1ac63f264aeab227b5666bd92bbaa9e9948d16a4ae5e8de9361cd28625373ffa`.
+- Test artifacts: `remaining-validation/` under the existing local follow-up state directory; full inference logs include actual isolated package/extension origins.
+- Normal Corral serving was restarted through the model lifecycle API after GPU cleanup, generated non-empty text, and was verified Ready on port 10178. No production venv, native/build source, Corral source, or `.51` DGX configuration was changed.
+
+These are bounded single measurements, not universal performance or quality guarantees.
 
 ## Not established
-
-- Full weighted-model inference with the newly built extensions, or installed-wheel-only heterogeneous worker loading.
 - Concurrent heterogeneous serving, a full 32,768-token request, vision, speculative serving, or a quality benchmark.
 - The full upstream test suite or hardware outside the tested NVIDIA/Radeon topology.

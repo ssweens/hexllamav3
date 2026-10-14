@@ -30,6 +30,17 @@ def resolve_rocm_python(rocm_python: str | None = None) -> str:
     return selected
 
 
+def rocm_worker_environment() -> dict[str, str]:
+    """Share source checkouts, but let installed workers use their own wheels."""
+    env = os.environ.copy()
+    root = Path(__file__).resolve().parents[2]
+    # The repository marker is absent from installed site-packages. Injecting
+    # that directory would make the HIP interpreter import the CUDA extension.
+    if (root / "pyproject.toml").is_file():
+        env["PYTHONPATH"] = str(root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    return env
+
+
 class HeterogeneousLayerSplit:
     """Own a persistent ROCm process for the trailing contiguous model layers.
 
@@ -135,13 +146,10 @@ class HeterogeneousLayerSplit:
         parent_socket, child_socket = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         parent_fd, child_fd = parent_socket.detach(), child_socket.detach()
         self.conn = Connection(parent_fd)
-        root = str(Path(__file__).resolve().parents[2])
-        env = os.environ.copy()
-        env["PYTHONPATH"] = root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         self.process = subprocess.Popen(
             [self.rocm_python, "-m", "exllamav3.model.hetero_rocm_worker", "--fd", str(child_fd),
              "--arena-name", self.arena.name, "--arena-size", str(self.arena.size), "--device", str(self.rocm_device)],
-            pass_fds=(child_fd,), env=env,
+            pass_fds=(child_fd,), env=rocm_worker_environment(),
         )
         os.close(child_fd)
         self._request("alloc_cache", {
@@ -390,12 +398,10 @@ def smoke_rocm_worker(cuda_device: str | int = "cuda:0", bytes: int = 1 << 20, r
         parent_socket, child_socket = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         parent_fd, child_fd = parent_socket.detach(), child_socket.detach()
         engine.conn = Connection(parent_fd)
-        root = str(Path(__file__).resolve().parents[2])
-        env = os.environ.copy(); env["PYTHONPATH"] = root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         engine.process = subprocess.Popen(
             [engine.rocm_python, "-m", "exllamav3.model.hetero_rocm_worker", "--fd", str(child_fd),
              "--arena-name", engine.arena.name, "--arena-size", str(engine.arena.size), "--device", "0"],
-            pass_fds=(child_fd,), env=env,
+            pass_fds=(child_fd,), env=rocm_worker_environment(),
         )
         os.close(child_fd)
         engine.arena.register()

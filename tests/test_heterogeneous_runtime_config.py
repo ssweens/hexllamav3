@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import torch
 
-from exllamav3.model.hetero import HeterogeneousLayerSplit, resolve_rocm_python
+from exllamav3.model.hetero import HeterogeneousLayerSplit, resolve_rocm_python, rocm_worker_environment
 from exllamav3.modules.block_sparse_mlp import _count_expert_assignments
 import bench_modes
 
@@ -76,6 +76,32 @@ class HeterogeneousRuntimeConfigTests(unittest.TestCase):
                 self.assertEqual(command[command.index("--rocm-python") + 1], rocm)
                 self.assertEqual(call.kwargs["env"]["EXL3_ROCM_PYTHON"], rocm)
             self.assertIn("--cuda-layers", run.call_args_list[2].args[0])
+
+    def test_installed_worker_does_not_inject_parent_site_packages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            module = Path(directory) / "site-packages/exllamav3/model/hetero.py"
+            with patch("exllamav3.model.hetero.__file__", str(module)), \
+                 patch.dict(os.environ, {}, clear=True):
+                self.assertNotIn("PYTHONPATH", rocm_worker_environment())
+            with patch("exllamav3.model.hetero.__file__", str(module)), \
+                 patch.dict(os.environ, {"PYTHONPATH": "caller-source", "EXL3_ROCM_PYTHON": "rocm"}, clear=True):
+                env = rocm_worker_environment()
+                self.assertEqual(env["PYTHONPATH"], "caller-source")
+                self.assertEqual(env["EXL3_ROCM_PYTHON"], "rocm")
+
+    def test_source_worker_propagates_checkout_without_mutating_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "pyproject.toml").write_text("[project]\nname = 'exllamav3'\n")
+            module = root / "exllamav3/model/hetero.py"
+            with patch("exllamav3.model.hetero.__file__", str(module)), \
+                 patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(rocm_worker_environment()["PYTHONPATH"], str(root))
+                self.assertNotIn("PYTHONPATH", os.environ)
+            with patch("exllamav3.model.hetero.__file__", str(module)), \
+                 patch.dict(os.environ, {"PYTHONPATH": "caller-source"}, clear=True):
+                self.assertEqual(rocm_worker_environment()["PYTHONPATH"], str(root) + os.pathsep + "caller-source")
+                self.assertEqual(os.environ["PYTHONPATH"], "caller-source")
 
     def test_cuda_and_rocm_expert_counts_are_equivalent(self):
         assignments = torch.tensor([0, 3, 1, 3, 0, 2, 3, 4, 1, 4], dtype=torch.long)
