@@ -25,7 +25,7 @@ These samples all ended at their token limits. They do not establish completed-a
 
 ## Public fork validation
 
-- Six focused unit tests pass: loader opt-in, recurrent checkpoint ownership/cleanup, and worker response arena reuse.
+- Six focused unit tests pass in both CUDA and ROCm virtualenvs: loader opt-in, recurrent checkpoint ownership/cleanup, and worker response arena reuse. These tests do not establish single-backend model parity.
 - `tests/test_heterogeneous_worker_arena.py` checks 16 forward/prefill cycles and 16 smoke responses using a 1 KiB arena and CPU tensors. Disabling `HeteroSharedArena.reset()` makes both cases fail with arena exhaustion.
 - `tests/test_hetero_handoff.py` passes 16 consecutive exact 1 MiB CUDA → shared memory → ROCm extension → CUDA round trips without loading model weights.
 - Python compilation and active-environment extension imports pass in both CUDA and ROCm virtualenvs. `git diff --check` passes.

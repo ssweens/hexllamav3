@@ -28,8 +28,10 @@
 - [x] Preserve the package/import name and local serving directory; document experimental scope.
 - [x] Run focused tests, transport smoke, syntax checks, and independent read-only review.
 - [x] Fix the reviewed worker response allocator leak and prove bounded reuse across repeated requests.
-- [ ] Commit the owned heterogeneous implementation on `hetero`, based on `v1.6.0`.
-- [ ] Push, set the default branch, and verify GitHub ancestry, visibility, and remote synchronization.
+- [x] Commit the owned heterogeneous implementation on `hetero`, based on `v1.6.0`.
+- [x] Push, set the default branch, and verify GitHub ancestry, visibility, and remote synchronization.
+
+Publication result: https://github.com/ssweens/hexllamav3 is public, retains `turboderp-org/exllamav3` as its GitHub parent, and defaults to `hetero`. Implementation commit: `278e6469f6da1ab9aaa2a1e18c0dcd26cbdb8b96`. The local checkout remains at `exllamav3-hetero`; `origin` points to the public fork, `upstream` to GitHub upstream, and `local-source` preserves the original local remote.
 
 ## Follow-up validation (outside initial publication)
 
