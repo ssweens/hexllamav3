@@ -18,16 +18,25 @@ windows = (os.name == "nt")
 
 # Determine if extension is already installed or needs to be built
 
-def is_precompiled_extension_available():
+def find_precompiled_extension():
+    """Find the ABI-specific wheel extension visible to this interpreter.
+
+    The source tree deliberately does not contain a Python module named
+    ``exllamav3_ext``.  Therefore normal import resolution reaches the active
+    virtualenv's site-packages extension even when this checkout is first on
+    ``PYTHONPATH``.  Keep the lookup explicit and retain its spec so the
+    heterogenous CUDA parent and ROCm child each bind their own wheel, rather
+    than accidentally falling through to the expensive JIT path.
+    """
     spec = importlib.util.find_spec(extension_name)
     if not spec or not spec.origin or not spec.loader:
-        return False
-    return any(
-        spec.origin.endswith(suffix)
-        for suffix in importlib.machinery.EXTENSION_SUFFIXES
-    )
+        return None
+    if any(spec.origin.endswith(suffix) for suffix in importlib.machinery.EXTENSION_SUFFIXES):
+        return spec
+    return None
 
-if is_precompiled_extension_available():
+_precompiled_extension = find_precompiled_extension()
+if _precompiled_extension is not None:
     import exllamav3_ext
 else:
 

@@ -291,7 +291,18 @@ class Cache:
         assert target == self or (not target.model.loaded_tp and not self.model.loaded_tp), \
             "Cannot copy pages between TP and non-TP caches, or between distinct TP caches."
         assert target.num_layers == self.num_layers
-        if not self.model.loaded_tp:
+        hetero = getattr(self.model, "hetero_engine", None)
+        if hetero is not None:
+            # Parent metadata includes trailing ROCm cache layers, but those intentionally
+            # have no CUDA tensors.  Copy only resident parent layers and ask the persistent
+            # worker to copy its own counterparts.
+            for instance, src in self.layers.items():
+                dst = target.layers[instance]
+                assert type(src) is type(dst)
+                if any(tensor is not None for tensor in src.get_tensors()):
+                    dst.copy_page(src, from_page, to_page, num_tokens)
+            hetero.copy_cache_page(id(self), from_page, to_page, num_tokens)
+        elif not self.model.loaded_tp:
             for instance, src in self.layers.items():
                 dst = target.layers[instance]
                 assert type(src) is type(dst)

@@ -141,14 +141,27 @@ class GDNState:
         return 0
 
 
-    def stash(self):
+    def stash(self, key=None):
         stashed = {
             "position": self.position,
             "checkpoint_size": self.checkpoint_size
         }
-        if not self.cache.model.loaded_tp:
+        engine = getattr(self.cache.model, "hetero_engine", None)
+        if engine is not None:
+            if key is None:
+                raise ValueError("heterogeneous recurrent checkpoints require a page key")
+            for k, layer in self.cache.get_all_recurrent_layers().items():
+                # ROCm-owned layers are metadata-only in the CUDA parent. Their real state is
+                # checkpointed inside the worker, never copied through a meta tensor.
+                if layer.device is not None:
+                    stashed[k] = layer.stash(self.slot)
+            checkpoint_key = (id(self.cache), key)
+            engine.stash_recurrent(id(self.cache), self.slot, checkpoint_key)
+            stashed["hetero_key"] = checkpoint_key
+        elif not self.cache.model.loaded_tp:
             for k, l in self.cache.get_all_recurrent_layers().items():
-                stashed[k] = l.stash(self.slot)
+                if l.device is not None:
+                    stashed[k] = l.stash(self.slot)
         else:
             cp_handle = new_checkpoint_handle()
             self.cache.model.tp_dispatch_all(mp_cache_recurrent_stash, (id(self.cache), cp_handle, self.slot))
@@ -158,9 +171,16 @@ class GDNState:
 
     def unstash(self, stashed: dict):
         assert self.position == stashed["position"]
-        if not self.cache.model.loaded_tp:
+        engine = getattr(self.cache.model, "hetero_engine", None)
+        if engine is not None:
+            for k, layer in self.cache.get_all_recurrent_layers().items():
+                if layer.device is not None:
+                    layer.unstash(self.slot, stashed[k])
+            engine.restore_recurrent(id(self.cache), self.slot, stashed["hetero_key"])
+        elif not self.cache.model.loaded_tp:
             for k, l in self.cache.get_all_recurrent_layers().items():
-                l.unstash(self.slot, stashed[k])
+                if l.device is not None:
+                    l.unstash(self.slot, stashed[k])
         else:
             cp_handle = stashed["tp_handle"]
             self.cache.model.tp_dispatch_all(mp_cache_recurrent_unstash, (id(self.cache), cp_handle, self.slot))

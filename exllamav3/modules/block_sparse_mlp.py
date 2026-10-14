@@ -1148,10 +1148,15 @@ class BlockSparseMLP(BlockSparseMLP_CPU, Module):
                 token_sorted = flat_token[order]
                 weight_sorted = flat_weight[order]
 
-                # Count how many assignments per expert. With few enough total assignments no
-                # expert can exceed the fused kernel's row capacity, so the readback (a CPU sync
-                # per layer, ~33% idle at MTP verify shapes) is skipped and everything is fused
-                expert_count = torch.bincount(flat_expert_local, minlength = E + 1)
+                # Count assignments per local expert plus the sentinel bucket. scatter_add_
+                # is equivalent here because flat_expert_local is constructed in [0, E], while
+                # avoiding torch.bincount's ROCm implementation: it synchronizes through
+                # local_scalar_dense and crashes on gfx1151 in the deployed PyTorch build.
+                # With few enough total assignments no expert can exceed the fused kernel's row
+                # capacity, so the readback (a CPU sync per layer, ~33% idle at MTP verify
+                # shapes) is skipped and everything is fused.
+                expert_count = torch.zeros(E + 1, dtype = torch.long, device = flat_expert_local.device)
+                expert_count.scatter_add_(0, flat_expert_local, torch.ones_like(flat_expert_local))
                 if self.fused_mode_buffers is not None and num_tokens * top_k <= self.fused_rows:
                     expert_count_list = None
                 else:

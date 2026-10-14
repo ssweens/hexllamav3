@@ -145,10 +145,14 @@ class RecurrentCache(OrderedDict):
                 self.metrics["stash_evictions"] += 1
                 host_pool.give(popped)
                 note_freed(popped["checkpoint_size"])
+                self._delete_hetero_checkpoint(popped)
                 if self.model.loaded_tp:
                     self.model.tp_dispatch_all(mp_cache_recurrent_del, (id(self), popped["tp_handle"]))
 
-            self[key] = state.stash()
+            if getattr(self.model, "hetero_engine", None) is not None:
+                self[key] = state.stash(key=key)
+            else:
+                self[key] = state.stash()
             self.update_total_size()
 
 
@@ -167,6 +171,7 @@ class RecurrentCache(OrderedDict):
             self.metrics["stash_pruned"] += 1
             host_pool.give(popped)
             note_freed(popped["checkpoint_size"])
+            self._delete_hetero_checkpoint(popped)
             if self.model.loaded_tp:
                 self.model.tp_dispatch_all(mp_cache_recurrent_del, (id(self), popped["tp_handle"]))
         if stranded:
@@ -191,6 +196,7 @@ class RecurrentCache(OrderedDict):
             seen.add(id(popped))
             host_pool.give(popped)
             freed += popped["checkpoint_size"]
+            self._delete_hetero_checkpoint(popped)
             if self.model.loaded_tp:
                 self.model.tp_dispatch_all(mp_cache_recurrent_del, (id(self), popped["tp_handle"]))
         self.current_size = 0
@@ -201,6 +207,13 @@ class RecurrentCache(OrderedDict):
         if self.model.loaded_tp:
             self.model.tp_dispatch_all(mp_host_pool_release, ())
         malloc_trim()
+
+
+    def _delete_hetero_checkpoint(self, stashed):
+        key = stashed.get("hetero_key")
+        engine = getattr(self.model, "hetero_engine", None)
+        if key is not None and engine is not None:
+            engine.delete_recurrent(key)
 
 
     def update_total_size(self):

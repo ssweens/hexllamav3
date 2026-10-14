@@ -1,3 +1,16 @@
+# hexllamav3
+
+Experimental heterogeneous CUDA + ROCm fork of [ExLlamaV3](https://github.com/turboderp-org/exllamav3), based on `v1.6.0`.
+The `hetero` branch adds a CUDA layer prefix and a ROCm layer suffix in separate Python processes, joined by POSIX shared memory.
+The Python package and import name remain `exllamav3` for compatibility with TabbyAPI.
+
+- The heterogeneous path is opt-in through `EXL3_HETERO_CUDA_LAYERS` or `Model.load_heterogeneous()`.
+- Each process uses its own PyTorch environment and matching CUDA or ROCm extension. This fork does not provide a combined CUDA/ROCm wheel.
+- Serial GLM-5.3-Flash text generation and repeated-prefix caching have been tested through TabbyAPI. See [test coverage](TEST_COVERAGE.md).
+- CUDA-only and ROCm-only correctness/performance parity, rebuilt fork wheels, and heterogeneous multimodal or speculative serving are not yet established.
+
+The original upstream documentation follows. Its PyPI and release-wheel links install upstream ExLlamaV3, not this fork's Python changes.
+See [heterogeneous setup](#heterogeneous-cuda--rocm-fork) to use this checkout with matching upstream extensions.
 
 <p align="center">
   <img src="doc/logo.png" width="640" alt="Llama 3.1 8B Instruct quantization benchmark across bits per weight">
@@ -156,6 +169,48 @@ specify the version directly, e.g. `uv pip install "torch==2.11.0" --torch-backe
 After installing with one of the options above, you should be able to run the conversion, eval and 
 example scripts from the main repo directory, e.g., `uv run python convert.py -i ...` or, for manual
 installations once the venv is active, `python convert.py -i ...`
+
+### Heterogeneous CUDA + ROCm fork
+
+Install matching upstream ExLlamaV3 `v1.6.0` wheels in two separate virtualenvs: one with CUDA PyTorch and one with ROCm PyTorch.
+When a matching prebuilt `exllamav3_ext` is installed, this checkout reuses that extension rather than JIT-building it.
+Fork-built wheels have not been tested.
+
+Clone the fork and select the interpreters for your machine:
+
+```bash
+git clone https://github.com/ssweens/hexllamav3.git
+cd hexllamav3
+export CUDA_PYTHON=/path/to/cuda/venv/bin/python
+export EXL3_ROCM_PYTHON=/path/to/rocm/venv/bin/python
+```
+
+Set `EXL3_ROCM_PYTHON` explicitly; the prototype retains a developer-local default that is not portable.
+The CUDA parent starts a persistent child with this interpreter. Activation and attention metadata pass through registered POSIX shared memory.
+The heterogeneous path requires Linux, both GPU backends, and enough space in `/dev/shm`.
+It has been tested with three NVIDIA GPUs and a Radeon 8060S (`gfx1151`).
+
+Create `Cache` before loading, then load a contiguous split:
+
+```python
+config = Config.from_directory(model_dir)
+model = Model.from_config(config)
+cache = Cache(model, max_num_tokens=2048)
+model.load_heterogeneous(cuda_layers=config.num_hidden_layers // 2)
+```
+
+`bench_modes.py` measures cached prefill, 128-token decode, and non-empty generated text in `cuda+cpu`, `rocm+cpu`, and `cuda+rocm` modes. `cuda+cpu` uses ExLlama's ordinary layer-split autosplit across the selected CUDA cards and accepts `-mcl N` / `--mcl N` to set `config.infer_params.moe_cpu_offload` before load (eligible `mul1` routed experts only). `cuda+rocm` keeps a contiguous CUDA prefix on one or more CUDA cards and starts ROCm for the suffix; the worker has a separate local cache and recurrent-state storage for its assigned layers.
+
+For the three-card CUDA prefix, use `--cuda-devices 0,1,2` with either normal reserve headroom or explicit per-card budgets:
+
+```bash
+PYTHONPATH="$PWD" "$CUDA_PYTHON" bench_modes.py \
+  --model /path/to/exl3 --mode cuda+cpu --cuda-devices 0,1,2 -mcl 8
+PYTHONPATH="$PWD" "$CUDA_PYTHON" bench_modes.py \
+  --model /path/to/exl3 --mode cuda+rocm --cuda-devices 0,1,2 --cuda-layers 24
+```
+
+`--cuda-reserve-gb` and `--cuda-use-gb` accept one GiB value or one per selected CUDA device. The benchmark prints live per-CUDA-device VRAM counters and, in heterogeneous mode, ROCm worker GTT allocator counters immediately before unload. `--mcl` is intentionally rejected in `cuda+rocm` mode: that mode partitions the model between independent CUDA and ROCm runtimes rather than mixing the CPU MoE worker into the ROCm suffix. The no-model-load transport check is `PYTHONPATH="$PWD" "$CUDA_PYTHON" tests/test_hetero_handoff.py`. It checks 16 consecutive 1 MiB CUDA/ROCm round trips. The benchmark's `--all` helper still uses developer-local interpreter paths; run individual modes in your chosen environments instead.
 
 **Build environment variables**
 

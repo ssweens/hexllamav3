@@ -2,6 +2,7 @@ from __future__ import annotations
 from functools import cached_property
 from typing import Callable
 import gc
+import os
 import torch
 from .config import Config
 from ..util import parse_int_list
@@ -31,6 +32,9 @@ class Model(Model_TPMixin, Model_LSMixin):
         self.cache_weakrefs = {}
         self.recurrent_state_cls = None
         self.draft_verifier_params = {}
+        # Set by load_heterogeneous().  Kept separate from tensor-parallel state: the CUDA
+        # parent still owns this Model object while the ROCm trailing range lives in a child.
+        self.hetero_engine = None
 
         # Index of last layer that affects KV cache, used during prefill
         self.last_kv_module_idx = None
@@ -381,6 +385,14 @@ class Model(Model_TPMixin, Model_LSMixin):
             y = self.prefill_tp(x, params, self.last_kv_module_idx, self.modules)
             advance_recurrent_states(input_ids, params, self)
             return y
+        elif self.hetero_engine is not None:
+            local = {id(m) for m, _, _ in self.hetero_engine.local_modules}
+            for m in self._get_prefetch_layers:
+                if id(m) in local:
+                    m.prefetch(x, params)
+            y = self.hetero_engine.prefill(x, params)
+            advance_recurrent_states(input_ids, params, self)
+            return y
         else:
             for m in self._get_prefetch_layers:
                 m.prefetch(x, params)
@@ -433,6 +445,14 @@ class Model(Model_TPMixin, Model_LSMixin):
             y = self.forward_tp(x, params, self.last_kv_module_idx, self.modules)
             advance_recurrent_states(input_ids, params, self)
             return y
+        elif self.hetero_engine is not None:
+            local = {id(m) for m, _, _ in self.hetero_engine.local_modules}
+            for m in self._get_prefetch_layers:
+                if id(m) in local:
+                    m.prefetch(x, params)
+            y = self.hetero_engine.forward(x, params)
+            advance_recurrent_states(input_ids, params, self)
+            return y
         else:
             for m in self._get_prefetch_layers:
                 m.prefetch(x, params)
@@ -442,6 +462,9 @@ class Model(Model_TPMixin, Model_LSMixin):
 
 
     def unload(self):
+        if self.hetero_engine is not None:
+            self.hetero_engine.close()
+            self.hetero_engine = None
         for module in self.modules:
             module.unload()
         # The loader's open slab blocks must not outlive the tensors sliced from them
@@ -565,6 +588,35 @@ class Model(Model_TPMixin, Model_LSMixin):
         :param autosplit_no_forward:
             For debug purposes, skip reference forward pass during autosplit load.
         """
+
+        # TabbyAPI always enters through load_gen(). Select the heterogeneous CUDA-prefix +
+        # ROCm-suffix loader here so its ordinary model/container integration does not need a
+        # separate code path. Only the primary text component can cross virtualenvs; vision and
+        # MTP components retain their normal loaders.
+        heterogeneous_cuda_layers = os.environ.get("EXL3_HETERO_CUDA_LAYERS")
+        if getattr(self, "component", "text") == "text" and heterogeneous_cuda_layers is not None:
+            if device is not None or tensor_p:
+                raise ValueError(
+                    "EXL3_HETERO_CUDA_LAYERS requires layer-split loading; "
+                    "do not set device or tensor_p"
+                )
+            yield from self.load_heterogeneous_gen(
+                cuda_layers=int(heterogeneous_cuda_layers),
+                cuda_devices=list(range(torch.cuda.device_count())),
+                reserve_per_device=reserve_per_device,
+                use_per_device=use_per_device,
+                max_chunk_size=max_chunk_size,
+                max_output_size=max_output_size,
+                max_output_factor=max_output_factor,
+                max_batch_size=max_batch_size,
+                callback=callback,
+                progressbar=progressbar,
+                verbose=verbose,
+                autosplit_no_forward=autosplit_no_forward,
+                arena_mb=int(os.environ.get("EXL3_HETERO_ARENA_MB", "256")),
+                generator=generator,
+            )
+            return
 
         # The pass is there to hand back VRAM held by garbage from an earlier model. With nothing
         # allocated on any device yet (the usual first load) there is none, and a full collection
@@ -720,6 +772,96 @@ class Model(Model_TPMixin, Model_LSMixin):
         finally:
             if freeze:
                 gc.unfreeze()
+
+
+    def load_heterogeneous_gen(
+        self,
+        cuda_layers: int,
+        cuda_devices: list[int] | None = None,
+        reserve_per_device: list[float] | float | None = None,
+        use_per_device: list[float] | float | None = None,
+        max_chunk_size: int = 2048,
+        max_output_size: int = 32,
+        max_output_factor: int = 1,
+        max_batch_size: int = 1,
+        callback: Callable[[int, int], None] | None = None,
+        progressbar: bool = False,
+        verbose: bool = False,
+        autosplit_no_forward: bool = False,
+        arena_mb: int | None = None,
+        generator: bool = True,
+    ):
+        """Generator-compatible wrapper around :meth:`load_heterogeneous`.
+
+        ``load_gen`` is ExLlamaV3's public loader protocol and is the only loader
+        TabbyAPI invokes. The heterogeneous engine loads synchronously because its
+        ROCm worker must finish its complete range before the CUDA prefix can be
+        made usable, so expose one completed progress step after that boundary.
+        """
+        self.load_heterogeneous(
+            cuda_layers=cuda_layers,
+            cuda_devices=cuda_devices,
+            reserve_per_device=reserve_per_device,
+            use_per_device=use_per_device,
+            max_chunk_size=max_chunk_size,
+            max_output_size=max_output_size,
+            max_output_factor=max_output_factor,
+            max_batch_size=max_batch_size,
+            progressbar=progressbar,
+            verbose=verbose,
+            autosplit_no_forward=autosplit_no_forward,
+            arena_mb=arena_mb,
+        )
+        if callback is not None:
+            callback(1, 1)
+        if generator:
+            yield None
+
+
+    def load_heterogeneous(
+        self,
+        cuda_layers: int,
+        cuda_device: torch.device | str | int = "cuda:0",
+        rocm_device: int = 0,
+        rocm_python: str | None = None,
+        arena_mb: int | None = None,
+        progressbar: bool = False,
+        verbose: bool = False,
+        cuda_devices: list[int] | None = None,
+        reserve_per_device: list[float] | float | None = None,
+        use_per_device: list[float] | float | None = None,
+        max_chunk_size: int = 2048,
+        max_output_size: int = 32,
+        max_output_factor: int = 1,
+        max_batch_size: int = 1,
+        autosplit_no_forward: bool = False,
+    ):
+        """Load a contiguous CUDA + ROCm layer split in two virtualenvs.
+
+        Create every :class:`Cache` before calling this method, exactly as with
+        :meth:`load`; the ROCm worker creates matching cache storage while it
+        loads its trailing layers.  ``cuda_layers`` is the number of leading
+        transformer blocks retained by the CUDA parent.  ``cuda_devices`` may
+        select a CUDA-prefix layer split; its budgets use the same GiB semantics
+        as :meth:`load`'s ``reserve_per_device`` / ``use_per_device``.
+        """
+        if self.loaded_tp or self.hetero_engine is not None or self.active_devices:
+            raise RuntimeError("model is already loaded; unload it before load_heterogeneous")
+        from .hetero import HeterogeneousLayerSplit
+        engine = HeterogeneousLayerSplit(
+            self, cuda_layers, cuda_device=cuda_device, cuda_devices=cuda_devices,
+            reserve_per_device=reserve_per_device, use_per_device=use_per_device,
+            rocm_device=rocm_device, rocm_python=rocm_python, arena_mb=arena_mb,
+            max_chunk_size=max_chunk_size, max_output_size=max_output_size,
+            max_output_factor=max_output_factor, max_batch_size=max_batch_size,
+            autosplit_no_forward=autosplit_no_forward,
+        )
+        self.hetero_engine = engine
+        try:
+            engine.load(progressbar=progressbar, verbose=verbose)
+        except Exception:
+            self.hetero_engine = None
+            raise
 
 
     @torch.inference_mode
