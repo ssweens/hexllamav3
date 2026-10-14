@@ -32,8 +32,17 @@ These samples all ended at their token limits. They do not establish completed-a
 - Independent read-only review found a worker response allocation cursor that accumulated across requests. Both inference and smoke responses now reset the cursor after request tensors are consumed. The focused regression tests and repeated GPU handoff verify this repair.
 - No native-kernel/build files or serving configuration were changed for publication. The full upstream suite and model-level inference after the response cursor repair were not run.
 
+## Portable configuration and post-fix serving
+
+- Twelve focused unit cases pass in both CUDA and ROCm virtualenvs. They cover explicit interpreter precedence, fail-before-allocation errors, `--all` child propagation, and equivalent expert counts. CUDA must call upstream `torch.bincount`; HIP must not call it.
+- Heterogeneous execution requires `rocm_python` or `EXL3_ROCM_PYTHON`. The ordinary CUDA/ROCm modes do not require another backend's interpreter. No developer-local interpreter defaults remain.
+- `tests/validate_tabby_heterogeneous.py` exercises serial streaming through an already-loaded OpenAI endpoint and rejects empty/incomplete generations. TabbyAPI's OpenAI usage schema does not expose cache-hit counts, so the server's metrics log is the cache evidence.
+- After the worker response cursor fix and portable configuration change, Corral cold-started the configured 3.10-bpw model. Three requests generated 32, 512, and 512 tokens (1,056 total) without arena exhaustion or worker errors.
+- The 1,528-token long prompt measured 384.89 tok/s prefill and 23.32 tok/s decode. The identical repeated prompt reused 1,280 tokens, processed 248 new tokens at 306.17 tok/s, and decoded at 23.76 tok/s.
+- Both 512-token continuations were byte-identical. All samples ended at their token limits; completed-answer quality and reasoning/content separation are still not established.
+
 ## Not established
 
 - CUDA-only and ROCm-only correctness/performance parity or wheels built from this fork.
 - Concurrent heterogeneous serving, a full 32,768-token request, vision, speculative serving, or a quality benchmark.
-- Portable defaults for the benchmark's `--all` interpreter paths. Individual modes and `EXL3_ROCM_PYTHON` can be selected explicitly.
+- The full upstream test suite or hardware outside the tested NVIDIA/Radeon topology.

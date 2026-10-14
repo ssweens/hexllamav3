@@ -37,7 +37,8 @@ Publication result: https://github.com/ssweens/hexllamav3 is public, retains `tu
 
 - [ ] Run CUDA-only and ROCm-only correctness/performance regressions, including the shared expert-count change.
 - [ ] Build and test separate fork CUDA and ROCm wheels.
-- [ ] Replace developer-local interpreter defaults without changing the existing serving profile unexpectedly.
+- [x] Replace developer-local interpreter defaults without changing the existing serving profile unexpectedly; `.51` explicitly configures `EXL3_ROCM_PYTHON` in TOML.
+- [x] Re-run live serving after the worker arena repair: 1,056 generated tokens, 1,280 cached-prefix tokens reused, and identical 512-token continuations.
 
 ## Review
 

@@ -3,8 +3,8 @@
 
 Examples (do not run while another workload owns the GPUs)::
 
-  /home/bigkahuna/src/tabbyAPI/.venv/bin/python bench_modes.py --model /path/to/exl3 --mode cuda+rocm --cuda-layers 24
-  /home/bigkahuna/src/tabbyAPI/.venv/bin/python bench_modes.py --model /path/to/exl3 --all --mcl 8
+  python bench_modes.py --model /path/to/exl3 --mode cuda+rocm --cuda-layers 24 --rocm-python /path/to/rocm/python
+  python bench_modes.py --model /path/to/exl3 --all --mcl 8 --cuda-python /path/to/cuda/python --rocm-python /path/to/rocm/python
 
 ``--all`` launches CUDA and ROCm single-mode measurements in their matching
 virtualenvs, then runs the heterogeneous parent here.  Each measurement performs
@@ -19,8 +19,6 @@ import subprocess
 import sys
 import time
 
-CUDA_PYTHON = "/home/bigkahuna/src/tabbyAPI/.venv/bin/python"
-ROCM_PYTHON = "/home/bigkahuna/src/tabbyAPI/.venv_rocm/bin/python"
 ROOT = Path(__file__).resolve().parent
 
 
@@ -28,7 +26,11 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True, help="local EXL3 model directory")
     parser.add_argument("--mode", choices=("cuda+cpu", "rocm+cpu", "cuda+rocm"), default="cuda+rocm")
-    parser.add_argument("--all", action="store_true", help="run all three modes via their correct venvs")
+    parser.add_argument("--all", action="store_true", help="run all three modes via their selected interpreters")
+    parser.add_argument("--cuda-python", default=os.environ.get("EXL3_CUDA_PYTHON", sys.executable),
+                        help="CUDA interpreter for --all (default: EXL3_CUDA_PYTHON or this Python)")
+    parser.add_argument("--rocm-python", default=os.environ.get("EXL3_ROCM_PYTHON"),
+                        help="ROCm interpreter for heterogeneous mode and --all (or EXL3_ROCM_PYTHON)")
     parser.add_argument("--cuda-layers", type=int, default=None, help="leading transformer blocks on CUDA")
     parser.add_argument("--cuda-devices", default=None,
                         help="comma-separated CUDA devices for layer split (default: all visible CUDA GPUs)")
@@ -47,13 +49,20 @@ def parse_args():
     return parser.parse_args()
 
 
-def child_env():
+def child_env(rocm_python):
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["EXL3_ROCM_PYTHON"] = rocm_python
     return env
 
 
 def run_all(args):
+    from exllamav3.model.hetero import resolve_rocm_python
+
+    rocm_python = resolve_rocm_python(args.rocm_python)
+    cuda_python = args.cuda_python
+    if not os.path.isfile(cuda_python) or not os.access(cuda_python, os.X_OK):
+        raise SystemExit(f"CUDA Python is not executable: {cuda_python}")
     base = [str(ROOT / "bench_modes.py"), "--model", args.model, "--prefill-tokens", str(args.prefill_tokens),
             "--decode-tokens", str(args.decode_tokens), "--prompt", args.prompt, "--_child"]
     if args.cuda_devices:
@@ -62,8 +71,8 @@ def run_all(args):
         base += ["--cuda-reserve-gb", args.cuda_reserve_gb]
     if args.cuda_use_gb:
         base += ["--cuda-use-gb", args.cuda_use_gb]
-    for mode, python in (("cuda+cpu", CUDA_PYTHON), ("rocm+cpu", ROCM_PYTHON), ("cuda+rocm", CUDA_PYTHON)):
-        command = [python, *base, "--mode", mode]
+    for mode, python in (("cuda+cpu", cuda_python), ("rocm+cpu", rocm_python), ("cuda+rocm", cuda_python)):
+        command = [python, *base, "--mode", mode, "--rocm-python", rocm_python]
         if mode != "cuda+rocm":
             command += ["--mcl", str(args.mcl)]
         if mode == "cuda+rocm":
@@ -74,7 +83,7 @@ def run_all(args):
             if args.arena_mb:
                 command += ["--arena-mb", str(args.arena_mb)]
         print("\n$", " ".join(command), flush=True)
-        subprocess.run(command, env=child_env(), check=True)
+        subprocess.run(command, env=child_env(rocm_python), check=True)
 
 
 def _csv_values(value: str | None, cast, name: str) -> list:
@@ -151,6 +160,10 @@ def make_prompt(tokenizer, text: str, target: int):
 
 
 def run_one(args):
+    # Validate the cross-backend interpreter before model or cache construction.
+    if args.mode == "cuda+rocm":
+        from exllamav3.model.hetero import resolve_rocm_python
+        args.rocm_python = resolve_rocm_python(args.rocm_python)
     # This must happen before Config construction: InferParams reads it from the environment.
     if args.mcl and args.mode == "cuda+rocm":
         raise SystemExit("--mcl is unsupported with cuda+rocm; run cuda+cpu for CPU MoE offload")
@@ -168,7 +181,8 @@ def run_one(args):
     if args.mode == "cuda+rocm":
         cuda_layers = args.cuda_layers or config.num_hidden_layers // 2
         cuda_devices, cuda_options = cuda_load_options(args, torch)
-        model.load_heterogeneous(cuda_layers, cuda_devices=cuda_devices, arena_mb=args.arena_mb,
+        model.load_heterogeneous(cuda_layers, rocm_python=args.rocm_python,
+                                 cuda_devices=cuda_devices, arena_mb=args.arena_mb,
                                  progressbar=True, max_chunk_size=args.prefill_tokens,
                                  max_batch_size=1, **cuda_options)
     elif args.mode == "cuda+cpu":

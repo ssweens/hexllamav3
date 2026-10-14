@@ -46,6 +46,15 @@ FUSED_ROWS_WIDE = int(os.environ.get("EXL3_MOE_FUSED_ROWS_WIDE", 256))
 FUSED_DET = os.environ.get("EXL3_MOE_FUSED_DET", "1") != "0"
 MAX_BSZN = 8  # must match MAX_BSZN in exllamav3_ext/libtorch/blocksparse_mlp.h
 
+
+def _count_expert_assignments(flat_expert_local: torch.Tensor, num_experts: int, *, hip: bool) -> torch.Tensor:
+    """Count local expert assignments, retaining CUDA bincount and the HIP-safe path."""
+    if not hip:
+        return torch.bincount(flat_expert_local, minlength=num_experts + 1)
+    counts = torch.zeros(num_experts + 1, dtype=torch.long, device=flat_expert_local.device)
+    counts.scatter_add_(0, flat_expert_local, torch.ones_like(flat_expert_local))
+    return counts
+
 @dataclass
 class FusedBuffers:
     temp_state_g: torch.Tensor
@@ -1148,15 +1157,11 @@ class BlockSparseMLP(BlockSparseMLP_CPU, Module):
                 token_sorted = flat_token[order]
                 weight_sorted = flat_weight[order]
 
-                # Count assignments per local expert plus the sentinel bucket. scatter_add_
-                # is equivalent here because flat_expert_local is constructed in [0, E], while
-                # avoiding torch.bincount's ROCm implementation: it synchronizes through
-                # local_scalar_dense and crashes on gfx1151 in the deployed PyTorch build.
-                # With few enough total assignments no expert can exceed the fused kernel's row
-                # capacity, so the readback (a CPU sync per layer, ~33% idle at MTP verify
-                # shapes) is skipped and everything is fused.
-                expert_count = torch.zeros(E + 1, dtype = torch.long, device = flat_expert_local.device)
-                expert_count.scatter_add_(0, flat_expert_local, torch.ones_like(flat_expert_local))
+                # Keep the original bincount path on CUDA; ROCm needs scatter_add_ because
+                # bincount synchronizes through local_scalar_dense on the deployed gfx1151 build.
+                # With few enough assignments, no expert exceeds the fused kernel's row capacity,
+                # so the readback (a CPU sync per layer) is skipped and everything is fused.
+                expert_count = _count_expert_assignments(flat_expert_local, E, hip=bool(torch.version.hip))
                 if self.fused_mode_buffers is not None and num_tokens * top_k <= self.fused_rows:
                     expert_count_list = None
                 else:

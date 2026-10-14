@@ -17,7 +17,17 @@ from .hetero_shared import HeteroSharedArena
 if TYPE_CHECKING:
     from .model import Model
 
-DEFAULT_ROCM_PYTHON = "/home/bigkahuna/src/tabbyAPI/.venv_rocm/bin/python"
+def resolve_rocm_python(rocm_python: str | None = None) -> str:
+    """Return an explicitly selected, executable ROCm interpreter."""
+    selected = rocm_python if rocm_python is not None else os.environ.get("EXL3_ROCM_PYTHON")
+    if not selected:
+        raise RuntimeError(
+            "heterogeneous inference requires a ROCm interpreter; pass rocm_python=... "
+            "or set EXL3_ROCM_PYTHON"
+        )
+    if not os.path.isfile(selected) or not os.access(selected, os.X_OK):
+        raise RuntimeError(f"ROCm Python is not executable: {selected}")
+    return selected
 
 
 class HeterogeneousLayerSplit:
@@ -47,6 +57,7 @@ class HeterogeneousLayerSplit:
         max_batch_size: int = 1,
         autosplit_no_forward: bool = False,
     ):
+        self.rocm_python = resolve_rocm_python(rocm_python)
         if torch.version.hip:
             raise RuntimeError("load_heterogeneous must be called from the CUDA virtualenv, not the ROCm virtualenv")
         if not torch.cuda.is_available():
@@ -76,9 +87,6 @@ class HeterogeneousLayerSplit:
         self.max_batch_size = max_batch_size
         self.autosplit_no_forward = autosplit_no_forward
         self.rocm_device = int(rocm_device)
-        self.rocm_python = rocm_python or os.environ.get("EXL3_ROCM_PYTHON", DEFAULT_ROCM_PYTHON)
-        if not os.path.isfile(self.rocm_python) or not os.access(self.rocm_python, os.X_OK):
-            raise RuntimeError(f"ROCm Python is not executable: {self.rocm_python}")
         self.arena = HeteroSharedArena((arena_mb or int(os.environ.get("EXL3_HETERO_ARENA_MB", "64"))) << 20)
         self.conn: Connection | None = None
         self.process: subprocess.Popen | None = None
@@ -363,6 +371,7 @@ def smoke_rocm_worker(cuda_device: str | int = "cuda:0", bytes: int = 1 << 20, r
     """Verify repeated cross-venv transport without loading model weights."""
     if round_trips < 1:
         raise ValueError("round_trips must be positive")
+    rocm_python = resolve_rocm_python()
     # A lightweight object is sufficient for the transport test; bypass model construction.
     from types import SimpleNamespace
     fake = SimpleNamespace(config=SimpleNamespace(num_hidden_layers=2), fwd_modules=[], cache_weakrefs={})
@@ -370,7 +379,7 @@ def smoke_rocm_worker(cuda_device: str | int = "cuda:0", bytes: int = 1 << 20, r
     engine = object.__new__(HeterogeneousLayerSplit)
     engine.model, engine.cuda_layers, engine.cuda_device, engine.rocm_device = fake, 1, torch.device(cuda_device), 0
     engine.return_device = engine.cuda_device
-    engine.rocm_python = os.environ.get("EXL3_ROCM_PYTHON", DEFAULT_ROCM_PYTHON)
+    engine.rocm_python = rocm_python
     engine.arena = HeteroSharedArena(max(4 << 20, bytes * 3))
     engine.conn = None
     engine.process = None
