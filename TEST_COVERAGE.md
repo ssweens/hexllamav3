@@ -30,7 +30,7 @@ These samples all ended at their token limits. They do not establish completed-a
 - `tests/test_hetero_handoff.py` passes 16 consecutive exact 1 MiB CUDA → shared memory → ROCm extension → CUDA round trips without loading model weights.
 - Python compilation and active-environment extension imports pass in both CUDA and ROCm virtualenvs. `git diff --check` passes.
 - Independent read-only review found a worker response allocation cursor that accumulated across requests. Both inference and smoke responses now reset the cursor after request tensors are consumed. The focused regression tests and repeated GPU handoff verify this repair.
-- No native-kernel/build files or serving configuration were changed for publication. The full upstream suite and model-level inference after the response cursor repair were not run.
+- Initial publication changed no native-kernel/build files or serving configuration and did not run the full upstream suite. The post-fix serving checks below supersede its model-level validation gap.
 
 ## Portable configuration and post-fix serving
 
@@ -41,8 +41,28 @@ These samples all ended at their token limits. They do not establish completed-a
 - The 1,528-token long prompt measured 384.89 tok/s prefill and 23.32 tok/s decode. The identical repeated prompt reused 1,280 tokens, processed 248 new tokens at 306.17 tok/s, and decoded at 23.76 tok/s.
 - Both 512-token continuations were byte-identical. All samples ended at their token limits; completed-answer quality and reasoning/content separation are still not established.
 
+## Native wheels and single-backend comparison
+
+Both native wheels contain all 255 tracked Python package files from candidate `c4dcfc229ac17a9cc4f22758e8c3054f19506d4e` byte-for-byte and an ELF extension. Each was installed only in an isolated Python 3.13 environment. Package and extension imports resolve inside that environment; all 12 focused unit cases pass. Exact native `add` checks pass on both RTX 5090s, the RTX 3090, and the Radeon 8060S.
+
+- CUDA: CUDA 12.8.1/Ubuntu 24.04 build, PyTorch 2.9.0+cu128, targets `sm_86` and `sm_120`. Host-native compilation fails against glibc 2.44; the compatible container resolves this without source/header patches.
+- ROCm: HIP 7.2/clang 22 build, PyTorch 2.13.0 TheRock environment, target `gfx1151`.
+- CUDA wheel SHA-256: `8cd3fe794852c695ed9fc504b947e81a656f80a6ad5c217fa4106befd8e8fd4d`.
+- ROCm wheel SHA-256: `b1ca93b8ac79c1e5133fe2a0ecd3ec766e6a21da88aa5cb72b6777b143802f93`.
+
+GLM 2.10-bpw, 767-token cached prefill, and 128 greedy decode steps produced byte-identical continuations in all four runs:
+
+| Backend/source | Prefill tok/s | Decode tok/s |
+| --- | ---: | ---: |
+| CUDA upstream v1.6.0 | 536.12 | 46.51 |
+| CUDA fork | 545.34 | 46.88 |
+| ROCm upstream v1.6.0 | 278.56 | 17.71 |
+| ROCm fork | 279.05 | 17.98 |
+
+These are single warm measurements, not a statistical performance guarantee. CUDA used three GPUs and six CPU-offloaded expert layers; ROCm used device 0 with no CPU expert offload. Each baseline/fork pair used the same existing prebuilt native extension to isolate Python changes. The newly built native extensions passed kernel checks, not full weighted-model inference. Serving remains on the original venvs with the shared source checkout.
+
 ## Not established
 
-- CUDA-only and ROCm-only correctness/performance parity or wheels built from this fork.
+- Full weighted-model inference with the newly built extensions, or installed-wheel-only heterogeneous worker loading.
 - Concurrent heterogeneous serving, a full 32,768-token request, vision, speculative serving, or a quality benchmark.
 - The full upstream test suite or hardware outside the tested NVIDIA/Radeon topology.

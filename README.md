@@ -7,7 +7,8 @@ The Python package and import name remain `exllamav3` for compatibility with Tab
 - The heterogeneous path is opt-in through `EXL3_HETERO_CUDA_LAYERS` or `Model.load_heterogeneous()`.
 - Each process uses its own PyTorch environment and matching CUDA or ROCm extension. This fork does not provide a combined CUDA/ROCm wheel.
 - Serial GLM-5.3-Flash text generation and repeated-prefix caching have been tested through TabbyAPI. See [test coverage](TEST_COVERAGE.md).
-- CUDA-only and ROCm-only correctness/performance parity, rebuilt fork wheels, and heterogeneous multimodal or speculative serving are not yet established.
+- Separate CUDA and ROCm wheels pass isolated import, unit, and native GPU kernel checks. A bounded GLM single-backend comparison produced identical continuations with no measured slowdown; see [test coverage](TEST_COVERAGE.md).
+- Heterogeneous multimodal or speculative serving and broad performance guarantees are not established.
 
 The original upstream documentation follows. Its PyPI and release-wheel links install upstream ExLlamaV3, not this fork's Python changes.
 See [heterogeneous setup](#heterogeneous-cuda--rocm-fork) to use this checkout with matching upstream extensions.
@@ -174,7 +175,9 @@ installations once the venv is active, `python convert.py -i ...`
 
 Install matching upstream ExLlamaV3 `v1.6.0` wheels in two separate virtualenvs: one with CUDA PyTorch and one with ROCm PyTorch.
 When a matching prebuilt `exllamav3_ext` is installed, this checkout reuses that extension rather than JIT-building it.
-Fork-built wheels have not been tested.
+Local fork wheels have been tested with Python 3.13: CUDA 12.8/PyTorch 2.9 on the NVIDIA GPUs, and HIP 7.2/PyTorch 2.13 on `gfx1151`. CUDA 12.8 compilation requires a compatible build environment; the tested build used Ubuntu 24.04 because this host's glibc 2.44 headers are incompatible. The wheels were tested in isolated environments, not installed over the serving environments.
+
+For heterogeneous serving, keep the shared checkout on `PYTHONPATH`. Installed-wheel-only heterogeneous deployment is not supported by the current worker import-path setup.
 
 Clone the fork and select the interpreters for your machine:
 
